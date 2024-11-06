@@ -295,6 +295,8 @@ fork(void)
 
   np->state = RUNNABLE;
 
+  np->mask = p->mask; // used for trace
+
   release(&np->lock);
 
   return pid;
@@ -692,4 +694,20 @@ procdump(void)
     printf("%d %s %s", p->pid, state, p->name);
     printf("\n");
   }
+}
+
+int
+procnum(uint64 addr){
+  struct proc *p;
+  uint64 num=0;
+  for(p=proc;p<&proc[NPROC];p++){
+    if(p->state!=UNUSED){
+      num++;
+    }
+  }
+  p=myproc();
+  if(copyout(p->pagetable,addr,(char *)&num,sizeof(num))<0){
+    return -1;
+  }
+  return 0;
 }

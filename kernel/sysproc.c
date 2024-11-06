@@ -95,3 +95,28 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
+uint64
+sys_trace(void)
+{
+  int mask;
+
+  if(argint(0,&mask)<0)
+    return -1;
+  struct proc *p = myproc();
+  acquire(&p->lock);
+  p->mask=mask;
+  release(&p->lock);
+  return 0;
+}
+
+uint64
+sys_sysinfo(void){
+  uint64 info;
+  if(argaddr(0,&info)<0){
+    return -1;
+  }
+  int ret1=freesize(info);
+  int ret2=procnum(info+8);
+  return ret1|ret2;
+}
