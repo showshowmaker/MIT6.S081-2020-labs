@@ -34,6 +34,7 @@ procinit(void)
       // Allocate a page for the process's kernel stack.
       // Map it high in memory, followed by an invalid
       // guard page.
+
       char *pa = kalloc();
       if(pa == 0)
         panic("kalloc");
@@ -42,6 +43,7 @@ procinit(void)
       p->kstack = va;
   }
   kvminithart();
+  //printf("procinit done\n");
 }
 
 // Must be called with interrupts disabled,
@@ -106,7 +108,7 @@ allocproc(void)
 
 found:
   p->pid = allocpid();
-
+  //printf("found %d\n",p->pid);
   // Allocate a trapframe page.
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
     release(&p->lock);
@@ -120,13 +122,32 @@ found:
     release(&p->lock);
     return 0;
   }
+  //printf("kpt start\n");
+  p->kpagetable=proc_kpagetable();
+  if(p->kpagetable == 0){
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
+  //printf("kpt done\n");
+
+  uint64 va=KSTACK((int)(p-proc));
+  uint64 pa=kvmpa(va);
+  prockvmmap(p->kpagetable,va, pa, PGSIZE, PTE_R | PTE_W);
+
+  // char *pa = kalloc();
+  // if(pa == 0)
+  //   panic("kalloc");
+  // uint64 va = KSTACK((int) (p - proc));
+  // prockvmmap(p->kpagetable,va,(uint64)pa, PGSIZE, PTE_R | PTE_W);
+  // p->kstack = va;
 
   // Set up new context to start executing at forkret,
   // which returns to user space.
   memset(&p->context, 0, sizeof(p->context));
   p->context.ra = (uint64)forkret;
   p->context.sp = p->kstack + PGSIZE;
-
+  //printf("allocproc %d\n",p->pid);
   return p;
 }
 
@@ -141,6 +162,10 @@ freeproc(struct proc *p)
   p->trapframe = 0;
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
+  //printf("into freeptnoleaf(p->kpagetable);\n");
+  if(p->kpagetable)
+    freeptnoleaf(p->kpagetable);
+  p->kpagetable = 0;
   p->pagetable = 0;
   p->sz = 0;
   p->pid = 0;
@@ -212,7 +237,7 @@ void
 userinit(void)
 {
   struct proc *p;
-
+  
   p = allocproc();
   initproc = p;
   
@@ -220,7 +245,7 @@ userinit(void)
   // and data into it.
   uvminit(p->pagetable, initcode, sizeof(initcode));
   p->sz = PGSIZE;
-
+  updatekpagetable(p->pagetable,p->kpagetable,0,p->sz);
   // prepare for the very first "return" from kernel to user.
   p->trapframe->epc = 0;      // user program counter
   p->trapframe->sp = PGSIZE;  // user stack pointer
@@ -231,6 +256,7 @@ userinit(void)
   p->state = RUNNABLE;
 
   release(&p->lock);
+  //("userinit\n");
 }
 
 // Grow or shrink user memory by n bytes.
@@ -243,9 +269,13 @@ growproc(int n)
 
   sz = p->sz;
   if(n > 0){
+    if(PGROUNDUP(sz+n)>=PLIC){
+      return -1;
+    }
     if((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
       return -1;
     }
+    updatekpagetable(p->pagetable,p->kpagetable,sz-n,sz);
   } else if(n < 0){
     sz = uvmdealloc(p->pagetable, sz, sz + n);
   }
@@ -261,7 +291,7 @@ fork(void)
   int i, pid;
   struct proc *np;
   struct proc *p = myproc();
-
+  //printf("fork\n");
   // Allocate process.
   if((np = allocproc()) == 0){
     return -1;
@@ -274,7 +304,7 @@ fork(void)
     return -1;
   }
   np->sz = p->sz;
-
+  
   np->parent = p;
 
   // copy saved user registers.
@@ -288,6 +318,8 @@ fork(void)
     if(p->ofile[i])
       np->ofile[i] = filedup(p->ofile[i]);
   np->cwd = idup(p->cwd);
+
+  updatekpagetable(np->pagetable,np->kpagetable,0,np->sz);
 
   safestrcpy(np->name, p->name, sizeof(p->name));
 
@@ -471,6 +503,10 @@ scheduler(void)
         // Switch to chosen process.  It is the process's job
         // to release its lock and then reacquire it
         // before jumping back to us.
+        w_satp(MAKE_SATP(p->kpagetable));
+        sfence_vma();
+        //printf("proc %d in\n",p->pid);
+        //printf("into proc %d\n",p->pid);
         p->state = RUNNING;
         c->proc = p;
         swtch(&c->context, &p->context);
@@ -478,7 +514,9 @@ scheduler(void)
         // Process is done running for now.
         // It should have changed its p->state before coming back.
         c->proc = 0;
-
+        kvminithart();
+        //printf("proc %d out\n",p->pid);
+        //printf("outoff proc %d\n",p->pid);
         found = 1;
       }
       release(&p->lock);
@@ -684,7 +722,6 @@ procdump(void)
   };
   struct proc *p;
   char *state;
-
   printf("\n");
   for(p = proc; p < &proc[NPROC]; p++){
     if(p->state == UNUSED)
@@ -696,4 +733,17 @@ procdump(void)
     printf("%d %s %s", p->pid, state, p->name);
     printf("\n");
   }
+}
+
+// todo
+void freeptnoleaf(pagetable_t pt){
+  for(int i=0;i<512;i++){
+    pte_t pte=pt[i];
+    
+    if((pte&PTE_V) && (pte&(PTE_R|PTE_W|PTE_X))==0){
+      uint64 pa0=PTE2PA(pte);
+      freeptnoleaf((pagetable_t)pa0);
+    }
+  }
+  kfree((void*)pt);
 }

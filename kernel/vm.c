@@ -6,6 +6,9 @@
 #include "defs.h"
 #include "fs.h"
 
+#include "spinlock.h"
+#include "proc.h"
+
 /*
  * the kernel's page table.
  */
@@ -133,10 +136,11 @@ kvmpa(uint64 va)
   uint64 pa;
   
   pte = walk(kernel_pagetable, va, 0);
+  //pte = walk(myproc()->kpagetable, va, 0);
   if(pte == 0)
-    panic("kvmpa");
+    panic("kvmpa1");
   if((*pte & PTE_V) == 0)
-    panic("kvmpa");
+    panic("kvmpa2");
   pa = PTE2PA(*pte);
   return pa+off;
 }
@@ -379,23 +383,24 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 int
 copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 {
-  uint64 n, va0, pa0;
+  // uint64 n, va0, pa0;
 
-  while(len > 0){
-    va0 = PGROUNDDOWN(srcva);
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
-      return -1;
-    n = PGSIZE - (srcva - va0);
-    if(n > len)
-      n = len;
-    memmove(dst, (void *)(pa0 + (srcva - va0)), n);
+  // while(len > 0){
+  //   va0 = PGROUNDDOWN(srcva);
+  //   pa0 = walkaddr(pagetable, va0);
+  //   if(pa0 == 0)
+  //     return -1;
+  //   n = PGSIZE - (srcva - va0);
+  //   if(n > len)
+  //     n = len;
+  //   memmove(dst, (void *)(pa0 + (srcva - va0)), n);
 
-    len -= n;
-    dst += n;
-    srcva = va0 + PGSIZE;
-  }
-  return 0;
+  //   len -= n;
+  //   dst += n;
+  //   srcva = va0 + PGSIZE;
+  // }
+  // return 0;
+  return copyin_new(pagetable,dst,srcva,len);
 }
 
 // Copy a null-terminated string from user to kernel.
@@ -405,38 +410,125 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 int
 copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
 {
-  uint64 n, va0, pa0;
-  int got_null = 0;
+  return copyinstr_new(pagetable,dst,srcva,max);
+  // uint64 n, va0, pa0;
+  // int got_null = 0;
 
-  while(got_null == 0 && max > 0){
-    va0 = PGROUNDDOWN(srcva);
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
-      return -1;
-    n = PGSIZE - (srcva - va0);
-    if(n > max)
-      n = max;
+  // while(got_null == 0 && max > 0){
+  //   va0 = PGROUNDDOWN(srcva);
+  //   pa0 = walkaddr(pagetable, va0);
+  //   if(pa0 == 0)
+  //     return -1;
+  //   n = PGSIZE - (srcva - va0);
+  //   if(n > max)
+  //     n = max;
 
-    char *p = (char *) (pa0 + (srcva - va0));
-    while(n > 0){
-      if(*p == '\0'){
-        *dst = '\0';
-        got_null = 1;
-        break;
-      } else {
-        *dst = *p;
-      }
-      --n;
-      --max;
-      p++;
-      dst++;
-    }
+  //   char *p = (char *) (pa0 + (srcva - va0));
+  //   while(n > 0){
+  //     if(*p == '\0'){
+  //       *dst = '\0';
+  //       got_null = 1;
+  //       break;
+  //     } else {
+  //       *dst = *p;
+  //     }
+  //     --n;
+  //     --max;
+  //     p++;
+  //     dst++;
+  //   }
 
-    srcva = va0 + PGSIZE;
+  //   srcva = va0 + PGSIZE;
+  // }
+  // if(got_null){
+  //   return 0;
+  // } else {
+  //   return -1;
+  // }
+}
+
+// to do
+void dovmprint(pagetable_t pagetable,int level){
+  if(level<0){
+    panic("vmprint level");
   }
-  if(got_null){
-    return 0;
-  } else {
-    return -1;
+  for(int i=0;i<512;i++){
+    pte_t pte=pagetable[i];
+    uint64 pa0=PTE2PA(pte);
+    if(pte&PTE_V){
+      if(level==1) printf(".. ");
+      if(level==0) printf(".. .. ");
+      printf("..%d: pte %p pa %p\n",i,pte,pa0);
+      if((pte&(PTE_R|PTE_W|PTE_X))==0){     
+        dovmprint((pagetable_t)pa0,level-1);
+      }
+    }
+  }
+  return;
+}
+
+void vmprint(pagetable_t pagetable){
+  printf("page table %p\n",pagetable);
+  dovmprint(pagetable,2);
+  return;
+}
+
+
+
+
+
+pagetable_t proc_kpagetable(){
+  pagetable_t kpagetable;
+  kpagetable=(pagetable_t)kalloc();
+  memset(kpagetable,0,PGSIZE);
+
+  // uart registers
+  prockvmmap(kpagetable,UART0, UART0, PGSIZE, PTE_R | PTE_W);
+
+  // virtio mmio disk interface
+  prockvmmap(kpagetable,VIRTIO0, VIRTIO0, PGSIZE, PTE_R | PTE_W);
+
+  // CLINT
+  prockvmmap(kpagetable,CLINT, CLINT, 0x10000, PTE_R | PTE_W);
+
+  // PLIC
+  prockvmmap(kpagetable,PLIC, PLIC, 0x400000, PTE_R | PTE_W);
+
+  // map kernel text executable and read-only.
+  prockvmmap(kpagetable,KERNBASE, KERNBASE, (uint64)etext-KERNBASE, PTE_R | PTE_X);
+
+  // map kernel data and the physical RAM we'll make use of.
+  prockvmmap(kpagetable,(uint64)etext, (uint64)etext, PHYSTOP-(uint64)etext, PTE_R | PTE_W);
+
+  // map the trampoline for trap entry/exit to
+  // the highest virtual address in the kernel.
+  prockvmmap(kpagetable,TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);
+
+  return kpagetable;
+
+}
+
+void prockvmmap(pagetable_t pt,uint64 va, uint64 pa, uint64 sz, int perm)
+{
+  if(mappages(pt, va, sz, pa, perm) != 0)
+    panic("prockvmmap");
+}
+
+void updatekpagetable(pagetable_t upt,pagetable_t kpt,uint64 oldsz,uint64 newsz){
+  if(newsz<=oldsz) return;
+  oldsz=PGROUNDUP(oldsz);
+  pte_t* upte,*kpte;
+  for(uint64 i=oldsz;i<newsz;i+=PGSIZE){
+    upte=walk(upt,i,0);
+    if(upte==0){
+      panic("updatekpagetable upte walk");
+    }
+    kpte=walk(kpt,i,1);
+    if(kpte==0){
+      panic("updatekpagetable kpte walk");
+    }
+    uint64 pa=PTE2PA(*upte);
+    uint flag=PTE_FLAGS(*upte)&(~PTE_U);
+    *kpte=PA2PTE(pa)|flag;
   }
 }
