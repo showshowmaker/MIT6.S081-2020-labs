@@ -65,14 +65,39 @@ usertrap(void)
     intr_on();
 
     syscall();
-  } else if((which_dev = devintr()) != 0){
+  }
+  //page fault
+  else if(r_scause()==13 || r_scause()==15){
+    if(r_stval()>p->sz || r_stval()<p->trapframe->sp){
+      p->killed=1;
+      goto kill;
+    }
+    uint64 addr=PGROUNDDOWN(r_stval());
+    char* mem;
+    mem=kalloc();
+    if(mem==0){
+      // printf("stval %p\n",r_stval());
+      // printf("pid %d\n",p->pid);
+      // printf("lazy kalloc falied\n");
+      p->killed=1;
+      goto kill;
+    }
+    memset(mem,0,PGSIZE);
+    if(mappages(p->pagetable,addr,PGSIZE,(uint64)mem,PTE_W|PTE_X|PTE_R|PTE_U)!=0){
+      //printf("lazy mappages falied\n");
+      kfree(mem);
+      p->killed=1;
+      goto kill;
+    }
+  } 
+  else if((which_dev = devintr()) != 0){
     // ok
   } else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     p->killed = 1;
   }
-
+kill:
   if(p->killed)
     exit(-1);
 
@@ -144,6 +169,7 @@ kerneltrap()
     panic("kerneltrap: interrupts enabled");
 
   if((which_dev = devintr()) == 0){
+
     printf("scause %p\n", scause);
     printf("sepc=%p stval=%p\n", r_sepc(), r_stval());
     panic("kerneltrap");
