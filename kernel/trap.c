@@ -65,9 +65,17 @@ usertrap(void)
     intr_on();
 
     syscall();
-  } else if((which_dev = devintr()) != 0){
+  }
+  else if(r_scause() == 15 || r_scause() == 13){
+    uint64 va=PGROUNDDOWN(r_stval());
+    if(handlecow(p->pagetable,va)==0){
+      p->killed=1;
+    }
+  } 
+  else if((which_dev = devintr()) != 0){
     // ok
-  } else {
+  } 
+  else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     p->killed = 1;
@@ -216,5 +224,60 @@ devintr()
   } else {
     return 0;
   }
+}
+
+uint64 handlecow(pagetable_t pagetable,uint64 va){
+  //struct proc* p=myproc();
+  
+  // if(va>MAXVA){
+  //   return -1;
+  // }
+  // pte_t *pte=walk(pagetable,va,0);
+  // if(pte==0){
+  //   return -1;
+  // }
+  // int flag=PTE_FLAGS(*pte);
+  // if (((flag & PTE_V) == 0) || ((flag & PTE_COW) == 0)) {
+  //   return -1;
+  // }
+  if(iscow(pagetable,va)==0){
+    return 0;
+  }
+  va = PGROUNDDOWN(va);
+  pte_t *pte = walk(pagetable, va, 0);
+  uint64 pa=PTE2PA(*pte);
+  if(getref(pa)==1){
+    *pte=*pte&(~PTE_COW);
+    *pte=*pte|(PTE_W);
+    return (uint64)pa;
+  }
+  uint64 ka=(uint64)kalloc();
+  if(ka==0){
+    return 0;
+  }
+  memmove((void*)ka,(void*)pa,PGSIZE);
+  int flag=PTE_FLAGS(*pte);
+  flag=flag|PTE_W;
+  flag=flag&(~PTE_COW);
+  if(mappages(pagetable,va,PGSIZE,ka,flag)!=0){
+    kfree((void*)ka);
+    return 0;
+  }
+  kfree((void*)PGROUNDDOWN(pa));
+  return (uint64)ka;
+}
+
+int iscow(pagetable_t pagetable, uint64 va)
+{
+  if(va > MAXVA)
+    return 0;
+  pte_t *pte = walk(pagetable, va, 0);
+
+  if(pte == 0)
+    return 0;
+  if(((*pte) & (PTE_V)) == 0)
+    return 0;
+  int ans = (*pte) & (PTE_COW);
+  return ans;
 }
 
