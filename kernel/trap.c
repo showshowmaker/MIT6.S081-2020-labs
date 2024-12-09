@@ -66,7 +66,8 @@ usertrap(void)
 
     syscall();
   }
-  else if(r_scause() == 15 || r_scause() == 13){
+  //else if(r_scause() == 15 || r_scause() == 13){
+  else if(r_scause() == 15){
     uint64 va=PGROUNDDOWN(r_stval());
     if(handlecow(p->pagetable,va)==0){
       p->killed=1;
@@ -227,19 +228,6 @@ devintr()
 }
 
 uint64 handlecow(pagetable_t pagetable,uint64 va){
-  //struct proc* p=myproc();
-  
-  // if(va>MAXVA){
-  //   return -1;
-  // }
-  // pte_t *pte=walk(pagetable,va,0);
-  // if(pte==0){
-  //   return -1;
-  // }
-  // int flag=PTE_FLAGS(*pte);
-  // if (((flag & PTE_V) == 0) || ((flag & PTE_COW) == 0)) {
-  //   return -1;
-  // }
   if(iscow(pagetable,va)==0){
     return 0;
   }
@@ -275,9 +263,8 @@ int iscow(pagetable_t pagetable, uint64 va)
 
   if(pte == 0)
     return 0;
-  if(((*pte) & (PTE_V)) == 0)
+  if(((*pte) & (PTE_V))==0 || ((*pte) & (PTE_COW))==0)
     return 0;
-  int ans = (*pte) & (PTE_COW);
-  return ans;
+  return 1;
 }
 

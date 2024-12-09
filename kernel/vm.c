@@ -369,18 +369,14 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
   while(len > 0){
     //printf("%d\n",len);
     va0 = PGROUNDDOWN(dstva);
-    pa0 = walkaddr(pagetable, va0);
+    
     if(iscow(pagetable,va0)!=0){
       pa0=handlecow(pagetable,va0);
       //printf("iscow pa0 %p\n",pa0);
     }
-    
-    // if(pa0 == 0){
-    //   if(handlecow(pagetable,va0)==-1){
-    //     return -1;
-    //   }
-    //   else pa0 = walkaddr(pagetable, va0);
-    // }
+    else{
+      pa0 = walkaddr(pagetable, va0);
+    }
     if(pa0==0){
       return -1;
     }
