@@ -1,0 +1,7 @@
+{
+    "files.associations": {
+        "*.cpp": "cmake",
+        "fs.h": "c",
+        "defs.h": "c"
+    }
+}

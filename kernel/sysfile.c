@@ -484,3 +484,107 @@ sys_pipe(void)
   }
   return 0;
 }
+
+uint64 sys_mmap(void){
+  uint64 addr;
+  int length, prot, flags, fd, offset;
+  struct file *f;
+  struct vma *vma;
+  struct proc *p = myproc();
+  uint64 err=(uint64)(-1);
+  if(argaddr(0, &addr) < 0 || argint(1, &length) < 0 || argint(2, &prot) < 0 || argint(3, &flags) < 0 || argfd(4, &fd, &f) < 0 || argint(5, &offset) < 0)
+    return err;
+  // addr=PGROUNDDOWN(addr);
+  length=PGROUNDUP(length);
+  if(p->sz + length > MAXVA)
+    return err;
+  if(!f->readable && (prot & PROT_READ))
+    return err;
+  if(!f->writable && (prot & PROT_WRITE) && (flags & MAP_SHARED))
+    return err;
+  for(int i=0;i<NVMA;i++){
+    vma=&p->vma[i];
+    if(vma->valid==0){
+      vma->valid=1;
+      vma->addr=p->sz;
+      p->sz+=length;
+      vma->length=length;
+      vma->prot=prot;
+      vma->flags=flags;
+      vma->fd=fd;
+      vma->offset=offset;
+      vma->file=f;
+      filedup(f);
+      //printf("success mmap: addr=%p\n",vma->addr);
+      return vma->addr;
+    }
+  }
+  return err;
+}
+
+uint64 sys_munmap(void){
+  uint64 addr;
+  int length;
+  // printf("in munmap\n");
+  if(argaddr(0, &addr) < 0 || argint(1, &length) < 0)
+    return -1;
+  struct proc *p = myproc();
+  struct vma *vma;
+  int found=0;
+  // printf("munmap: addr=%p\n",addr);
+  for(int i=0;i<NVMA;i++){
+    if(p->vma[i].valid==1 && p->vma[i].addr<=addr&&p->vma[i].addr+p->vma[i].length>=addr+length){
+      vma=&p->vma[i];
+      found=1;
+      break;
+    }
+  }
+  if(!found)
+    return -1;
+  //printf("found\n");
+  // printf("----------munmap: addr=%d,length=%d\n",addr,length);
+  addr=PGROUNDDOWN(addr);
+  length=PGROUNDUP(length);
+  if(vma->flags&MAP_SHARED){
+    filewrite(vma->file, addr, length);
+  }
+  // printf("filewrite success\n");
+  //没访问过就unmap的话，调用uvmunmap时会报错，需要修改uvmunmap，uvmunmap不存在的话不报错
+  uvmunmap(p->pagetable,addr,length/PGSIZE,1);
+
+  if(addr==vma->addr && length==vma->length){
+    vma->valid=0;
+    fileclose(vma->file);
+  }
+  else if(addr==vma->addr){
+    // printf("munmap from head\n");
+    vma->addr+=length;
+    vma->length-=length;
+    vma->offset+=length;
+    // printf("addr=%d,length=%d----------------\n",vma->addr,vma->length);
+  }
+  else if(addr+length==vma->addr+vma->length){
+    
+    vma->length-=length;
+  }
+  else{
+    struct vma *newvma;
+    for(int i=0;i<NVMA;i++){
+      newvma=&p->vma[i];
+      if(newvma->valid==0){
+        newvma->valid=1;
+        newvma->addr=addr+length;
+        newvma->length=addr-vma->addr+vma->length-length;
+        newvma->prot=vma->prot;
+        newvma->flags=vma->flags;
+        newvma->fd=vma->fd;
+        newvma->offset=vma->offset+length+addr-vma->addr;
+        newvma->file=vma->file;
+        filedup(vma->file);
+        break;
+      }
+    }
+    vma->length=addr-vma->addr;
+  }
+  return 0;
+}

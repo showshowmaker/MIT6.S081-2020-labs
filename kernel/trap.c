@@ -1,10 +1,17 @@
 #include "types.h"
 #include "param.h"
 #include "memlayout.h"
-#include "riscv.h"
 #include "spinlock.h"
+#include "sleeplock.h"
+#include "riscv.h"
 #include "proc.h"
 #include "defs.h"
+#include "fs.h"
+#include "file.h"
+#include "fcntl.h"
+
+//include的顺序也有影响啊，泥土
+
 
 struct spinlock tickslock;
 uint ticks;
@@ -65,6 +72,54 @@ usertrap(void)
     intr_on();
 
     syscall();
+  }else if(r_scause()==13 || r_scause()==15){
+    uint64 va = r_stval();
+    if(va >= p->sz || va > MAXVA){
+      p->killed = 1;
+    }else{
+      int found=0;
+      for(int i=0;i<NVMA;i++){
+        struct vma *vma = &p->vma[i];
+        if(vma->valid==1 && va>=vma->addr && va<vma->addr+vma->length){
+          // if(vma->prot==PROT_NONE){
+          //   p->killed = 1;
+          //   break;
+          // }
+          va=PGROUNDDOWN(va);
+          uint64 pa=(uint64)kalloc();
+          if(pa==0){
+            // p->killed = 1;
+            break;
+          }
+          memset((void*)pa, 0, PGSIZE);
+          ilock(vma->file->ip);
+          if(readi(vma->file->ip,0,pa,vma->offset+va-vma->addr,PGSIZE)<0){
+            iunlock(vma->file->ip);
+            kfree((void*)pa);
+            // p->killed = 1;
+            break;
+          }
+          iunlock(vma->file->ip);
+          int flag=PTE_U;
+          if(vma->prot&PROT_WRITE)
+            flag|=PTE_W;
+          if(vma->prot&PROT_READ)
+            flag|=PTE_R;
+          if(vma->prot&PROT_EXEC)
+            flag|=PTE_X;
+          if(mappages(p->pagetable,va,PGSIZE,pa,flag)<0){
+            kfree((void*)pa);
+            // p->killed = 1;
+            break;
+          }
+          found=1;
+        }
+      }
+      if(!found){
+        p->killed = 1;
+      }
+    }
+
   } else if((which_dev = devintr()) != 0){
     // ok
   } else {

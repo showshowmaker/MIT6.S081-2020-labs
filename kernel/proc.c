@@ -5,6 +5,7 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "fcntl.h"
 
 struct cpu cpus[NCPU];
 
@@ -273,13 +274,15 @@ fork(void)
   if((np = allocproc()) == 0){
     return -1;
   }
-
+  // printf("fork: pid=%d\n",np->pid);
   // Copy user memory from parent to child.
   if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
+    // printf("fork: pid=%d\n",np->pid);
     freeproc(np);
     release(&np->lock);
     return -1;
   }
+  // printf("fork: pid=%d\n",np->pid);
   np->sz = p->sz;
 
   np->parent = p;
@@ -299,6 +302,15 @@ fork(void)
   safestrcpy(np->name, p->name, sizeof(p->name));
 
   pid = np->pid;
+
+  for(i=0;i<NVMA;i++){
+    np->vma[i].valid=0;
+    if(p->vma[i].valid){
+      memmove(&np->vma[i],&p->vma[i],sizeof(struct vma));
+      filedup(p->vma[i].file);
+      // printf("fork: addr=%p,length=%d\n",np->vma[i].addr,np->vma[i].length);
+    }
+  }
 
   np->state = RUNNABLE;
 
@@ -350,6 +362,17 @@ exit(int status)
       struct file *f = p->ofile[fd];
       fileclose(f);
       p->ofile[fd] = 0;
+    }
+  }
+
+  for(int i=0;i<NVMA;i++){
+    if(p->vma[i].valid){
+      if(p->vma[i].flags & MAP_SHARED){
+        filewrite(p->vma[i].file, p->vma[i].addr, p->vma[i].length);
+      }
+      fileclose(p->vma[i].file);
+      uvmunmap(p->pagetable, p->vma[i].addr, p->vma[i].length/PGSIZE, 1);
+      p->vma[i].valid=0;
     }
   }
 
